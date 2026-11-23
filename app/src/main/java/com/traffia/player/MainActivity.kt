@@ -17,8 +17,12 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -75,7 +79,15 @@ class MainActivity : ComponentActivity() {
     private lateinit var qrView: QrOverlayView
     private lateinit var waitingText: TextView
     private lateinit var diagText: TextView
+    private lateinit var diagPanel: ScrollView
+    private lateinit var brightnessEditText: TextView
     private lateinit var player: ExoPlayer
+
+    // ---- brilho
+    private var brightnessCfg = BrightnessCfg()
+    private var brightnessEdit = BrightnessCfg()
+    private var brightnessDirty = false
+    private var appliedBrightness: Float = Float.NaN
 
     // ---- estado
     private var playing: List<Item> = emptyList()
@@ -136,6 +148,10 @@ class MainActivity : ComponentActivity() {
                 prefs.edit().putString("device_secret", it).apply()
             }
         rotationDeg = prefs.getInt("rotation", 0)
+        prefs.getString("brightness_json", null)?.let { raw ->
+            try { BrightnessCfg.fromJson(JSONObject(raw))?.let { brightnessCfg = it } } catch (e: Exception) { }
+        }
+        brightnessEdit = brightnessCfg
 
         api = Api(BuildConfig.SUPABASE_URL, BuildConfig.SUPABASE_KEY)
         location = LocationTracker(this)
@@ -146,6 +162,8 @@ class MainActivity : ComponentActivity() {
         rides = RideTracker { ridesQ.add(it) }
 
         buildUi()
+        updateBrightnessEditor()
+        applyBrightness()
         buildPlayer()
         loadCachedPlaylist()
         askPermissions()
@@ -227,18 +245,29 @@ class MainActivity : ComponentActivity() {
         // Tela de diagnóstico (fica fora do "stage" para não girar junto)
         diagText = TextView(this).apply {
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.argb(215, 0, 0, 0))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             typeface = android.graphics.Typeface.MONOSPACE
-            setPadding(dp(16f), dp(40f), dp(16f), dp(16f))
-            visibility = View.GONE
         }
-        root.addView(diagText, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val diagContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16f), dp(40f), dp(16f), dp(24f))
+            addView(diagText)
+            addView(buildBrightnessControls())
+        }
+        diagPanel = ScrollView(this).apply {
+            setBackgroundColor(Color.argb(225, 0, 0, 0))
+            visibility = View.GONE
+            addView(diagContent)
+        }
+        root.addView(diagPanel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // Toque escondido: segurar o canto superior esquerdo por 2 segundos abre/fecha o diagnóstico
         val toggleDiag = Runnable {
-            diagText.visibility = if (diagText.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            val open = diagPanel.visibility != View.VISIBLE
+            diagPanel.visibility = if (open) View.VISIBLE else View.GONE
+            if (open && !brightnessDirty) brightnessEdit = brightnessCfg
             updateDiag()
+            updateBrightnessEditor()
         }
         val hotspot = View(this)
         hotspot.setOnTouchListener { _, ev ->
@@ -441,7 +470,8 @@ class MainActivity : ComponentActivity() {
         tickCount++
         if (tickCount % 4 == 0) {
             updateWaiting()
-            if (diagText.visibility == View.VISIBLE) updateDiag()
+            applyBrightness()
+            if (diagPanel.visibility == View.VISIBLE) updateDiag()
         }
     }
 
@@ -528,6 +558,17 @@ class MainActivity : ComponentActivity() {
             prefs.edit().putInt("rotation", rot).apply()
             applyRotation()
         }
+        BrightnessCfg.fromJson(if (res.isNull("brightness")) null else res.optJSONObject("brightness"))?.let { cfg ->
+            if (cfg != brightnessCfg) {
+                brightnessCfg = cfg
+                prefs.edit().putString("brightness_json", cfg.toJson().toString()).apply()
+                if (!brightnessDirty) {
+                    brightnessEdit = cfg
+                    updateBrightnessEditor()
+                }
+                applyBrightness()
+            }
+        }
         val command = if (res.isNull("command")) null else res.optString("command")
         val version = res.optInt("playlist_version", 0)
 
@@ -587,6 +628,130 @@ class MainActivity : ComponentActivity() {
     }
 
     // =====================================================================
+    // Brilho da tela (por horário)
+    private fun applyBrightness() {
+        // enquanto ajusta na tela de diagnóstico, mostra a prévia do valor que está sendo editado
+        val cfg = if (brightnessDirty && diagPanel.visibility == View.VISIBLE) brightnessEdit else brightnessCfg
+        val target = cfg.targetNow()
+        val value = target?.let { BrightnessCfg.clamp(it) / 100f }
+            ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        if (value == appliedBrightness) return
+        appliedBrightness = value
+        val lp = window.attributes
+        lp.screenBrightness = value
+        window.attributes = lp
+    }
+
+    private fun buildBrightnessControls(): View {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(20f), 0, 0)
+        }
+        box.addView(TextView(this).apply {
+            text = "— Brilho da tela —"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            typeface = android.graphics.Typeface.MONOSPACE
+        })
+        brightnessEditText = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(0, dp(8f), 0, dp(8f))
+        }
+        box.addView(brightnessEditText)
+
+        fun edit(change: (BrightnessCfg) -> BrightnessCfg) {
+            brightnessEdit = change(brightnessEdit)
+            brightnessDirty = brightnessEdit != brightnessCfg
+            updateBrightnessEditor()
+            applyBrightness()
+        }
+
+        fun row(vararg buttons: Pair<String, () -> Unit>) {
+            val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for ((label, action) in buttons) {
+                val b = Button(this).apply {
+                    text = label
+                    isAllCaps = false
+                    setOnClickListener { action() }
+                }
+                r.addView(b, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }
+            box.addView(r)
+        }
+
+        row(
+            "Dia −5%" to { edit { it.copy(day = BrightnessCfg.clamp(it.day - 5)) } },
+            "Dia +5%" to { edit { it.copy(day = BrightnessCfg.clamp(it.day + 5)) } },
+        )
+        row(
+            "Noite −5%" to { edit { it.copy(night = BrightnessCfg.clamp(it.night - 5)) } },
+            "Noite +5%" to { edit { it.copy(night = BrightnessCfg.clamp(it.night + 5)) } },
+        )
+        row(
+            "Noite começa −30min" to { edit { it.copy(nightStart = (it.nightStart - 30 + 1440) % 1440) } },
+            "+30min" to { edit { it.copy(nightStart = (it.nightStart + 30) % 1440) } },
+        )
+        row(
+            "Noite termina −30min" to { edit { it.copy(nightEnd = (it.nightEnd - 30 + 1440) % 1440) } },
+            "+30min" to { edit { it.copy(nightEnd = (it.nightEnd + 30) % 1440) } },
+        )
+        row("Ligar / desligar agendamento" to { edit { it.copy(enabled = !it.enabled) } })
+        row(
+            "Salvar" to { saveBrightness() },
+            "Desfazer" to {
+                brightnessEdit = brightnessCfg
+                brightnessDirty = false
+                updateBrightnessEditor()
+                applyBrightness()
+            },
+        )
+        return box
+    }
+
+    private fun updateBrightnessEditor() {
+        if (!::brightnessEditText.isInitialized) return
+        val c = brightnessEdit
+        val sb = StringBuilder()
+        sb.append("Agendamento: ${if (c.enabled) "LIGADO" else "DESLIGADO (brilho do celular)"}\n")
+        sb.append("Dia:   ${c.day}%\n")
+        sb.append("Noite: ${c.night}%  (das ${BrightnessCfg.fmt(c.nightStart)} às ${BrightnessCfg.fmt(c.nightEnd)})\n")
+        sb.append("Mínimo 25%, máximo 100%.")
+        if (brightnessDirty) sb.append("\n* Não salvo: toque em Salvar.")
+        brightnessEditText.text = sb.toString()
+    }
+
+    private fun saveBrightness() {
+        val cfg = brightnessEdit
+        lifecycleScope.launch {
+            try {
+                api.rpc(
+                    "device_set_brightness",
+                    JSONObject()
+                        .put("p_device_id", deviceId)
+                        .put("p_secret", secret)
+                        .put("p_enabled", cfg.enabled)
+                        .put("p_day", cfg.day)
+                        .put("p_night", cfg.night)
+                        .put("p_night_start", BrightnessCfg.fmt(cfg.nightStart))
+                        .put("p_night_end", BrightnessCfg.fmt(cfg.nightEnd))
+                )
+                brightnessCfg = cfg
+                brightnessDirty = brightnessEdit != brightnessCfg
+                prefs.edit().putString("brightness_json", cfg.toJson().toString()).apply()
+                updateBrightnessEditor()
+                applyBrightness()
+                Toast.makeText(this@MainActivity, "Brilho salvo", Toast.LENGTH_SHORT).show()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Toast.makeText(this@MainActivity, "Não salvou (sem internet?). Tente de novo.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    // =====================================================================
     // Diagnóstico
     private fun updateDiag() {
         val fmt = SimpleDateFormat("HH:mm:ss", Locale("pt", "BR"))
@@ -595,6 +760,8 @@ class MainActivity : ComponentActivity() {
         sb.append("Aparelho: $shortCode ${if (deviceName.isNotBlank()) "($deviceName)" else ""}\n")
         sb.append("Playlist: versão ${appliedVersion ?: "-"} · ${playing.size} vídeo(s)\n")
         sb.append("Rotação: $rotationDeg°\n")
+        val target = brightnessCfg.targetNow()
+        sb.append("Brilho agora: ${target?.let { "$it%" } ?: "do próprio celular"}\n")
         curItem?.let { sb.append("Tocando: ${it.title}${if (it.check) " [conteúdo TraffIA]" else ""}\n") }
         if (playing.isNotEmpty() && playing.none { it.check }) {
             sb.append("Atenção: nenhum conteúdo TraffIA na playlist,\nentão não há checagem de passageiro.\n")

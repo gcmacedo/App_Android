@@ -9,6 +9,7 @@ Versão de teste do player da TraffIA para rodar num **celular Android**. Fala s
 - **Detecção de passageiro** (câmera frontal + ML Kit, sem internet): checa no início e perto do fim de cada **conteúdo da TraffIA**. Nenhuma imagem é salva nem enviada, só o número de rostos.
 - **Corridas**: checagens positivas viram uma corrida; ela termina depois de 3 negativas seguidas; corridas com menos de 90 s são descartadas.
 - **Tela de diagnóstico**: segure o canto superior esquerdo por 2 s.
+- **Brilho por horário**: brilho de dia e de noite (25% a 100%) e o horário em que a noite começa e termina. Fica salvo por carro no servidor (`devices.brightness_*`, `night_start`, `night_end`). Ajuste na tela de diagnóstico e toque em **Salvar**. Padrão: dia 100%, noite 40%, das 18:00 às 06:00. Vale enquanto o app está aberto; ao sair, o celular volta ao brilho dele.
 - **Sem modo quiosque**: tela cheia, mas Home e Voltar funcionam e o app não abre sozinho quando o celular reinicia.
 
 ## Qual vídeo conta como "conteúdo da TraffIA"
